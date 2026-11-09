@@ -433,7 +433,7 @@
     }
 
     .bracket-container {
-      min-width: 1080px;
+      min-width: 1200px;
       display: flex;
       flex-direction: column-reverse; /* 底層籤位 -> 第一輪 -> 第二輪... -> 頂層決賽 */
       gap: 36px;
@@ -667,10 +667,23 @@
       box-shadow: 0 6px 16px rgba(245, 158, 11, 0.2);
     }
 
+    /* 決賽盒在群組內改回一般排版，避免與季殿軍賽重疊 */
+    .final-box-group .match-box {
+      position: relative;
+      transform: none;
+    }
+
     .final-box.bronze {
       border: 2px dashed #64748b;
       box-shadow: 0 4px 8px rgba(0,0,0,0.06);
       width: 235px;
+    }
+
+    /* 季殿軍賽放在冠亞軍賽右側，不擋住準決賽連到決賽的線 */
+    .final-box-group .match-box.bronze {
+      position: absolute;
+      top: 0;
+      left: calc(100% + 28px);
     }
 
     .final-box .match-header {
@@ -1543,6 +1556,9 @@
       const svg = document.getElementById('bracket-svg');
       container.innerHTML = '';
       container.appendChild(svg);
+      // 籤數越多，畫布越寬，避免比賽盒互相重疊（超出可視範圍時可左右捲動）
+      // （相鄰兩場比賽中心相距 2 籤，比賽盒寬 150px，因此每籤至少需 80px）
+      container.style.minWidth = `${Math.max(1200, bracketConfig.slots.length * 80)}px`;
 
       // 籤位列
       const seedsRow = document.createElement('div');
