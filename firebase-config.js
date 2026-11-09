@@ -6,16 +6,17 @@
 // ・填入設定：所有開啟同一網址的裝置即時同步（設定步驟見 README.md）。
 // ============================================================
 
-window.FIREBASE_CONFIG = null;
-
-// 範例（把 Firebase 主控台「專案設定 → 你的應用程式 → SDK 設定」那段貼過來）：
-// window.FIREBASE_CONFIG = {
-//   apiKey: "AIza....",
-//   authDomain: "your-project.firebaseapp.com",
-//   databaseURL: "https://your-project-default-rtdb.asia-southeast1.firebasedatabase.app",
-//   projectId: "your-project",
-//   appId: "1:1234567890:web:abcdef"
-// };
+// Firebase 專案：autosche（網頁應用程式 autosche-web）
+window.FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCX1-oi6A2O7h0tqT3qzGh69nxxKaAEd-U",
+  authDomain: "autosche.firebaseapp.com",
+  databaseURL: "https://autosche-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "autosche",
+  storageBucket: "autosche.firebasestorage.app",
+  messagingSenderId: "646016652900",
+  appId: "1:646016652900:web:7f86e7a28cba07cff23171",
+  measurementId: "G-M3B3YSGBSZ"
+};
 
 // 資料房間名稱：每次比賽可換一個名字，就會得到一份全新的賽程。
 // 也可以直接在網址加上 ?room=名稱 臨時切換。
