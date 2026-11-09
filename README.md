@@ -1,4 +1,6 @@
-# 拔河賽自動賽程表（GitHub Pages 網頁版）
+# 拔河賽自動賽程表（GitHub Pages 網頁版・Firebase）
+
+> 另有使用 Supabase 同步的對照版本：[lzfschool/autosche_supa](https://github.com/lzfschool/autosche_supa)，兩者 `index.html` 相同，只差在設定檔。
 
 純前端網頁版，**不需要電腦開著跑伺服器**，直接放在 GitHub Pages 就能使用。
 支援手機、平板、大螢幕；設定 Firebase 後可多裝置即時同步。
@@ -20,6 +22,7 @@
 
 - `index.html`：主程式（全部前端邏輯）
 - `firebase-config.js`：雲端同步設定（可留空）
+- `supabase-config.js`：Supabase 設定，本版保持 `null`
 - `tournament_data.json`：初始賽程資料。瀏覽器第一次開啟、而且還沒有本機資料時會讀取它
 - `legacy-本機伺服器版/`：舊的 Python 伺服器與 Cloudflare 穿透版本，已不再使用，只留作參考
 

@@ -992,6 +992,7 @@
 
   <!-- 雲端同步設定 (Firebase，可留空＝單機模式) -->
   <script src="firebase-config.js"></script>
+  <script src="supabase-config.js"></script>
 
   <!-- QR Code 產生庫 -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
@@ -1104,8 +1105,13 @@
     const FB_CONF = (window.FIREBASE_CONFIG && window.FIREBASE_CONFIG.databaseURL) ? window.FIREBASE_CONFIG : null;
     const SYNC_ROOM = String(URL_PARAMS.get('room') || window.SYNC_ROOM || 'default').replace(/[.#$\[\]\/\s]/g, '_');
     const FIREBASE_SDK = 'https://www.gstatic.com/firebasejs/10.12.2/';
+    const SB_CONF = (!FB_CONF && window.SUPABASE_CONFIG && window.SUPABASE_CONFIG.url && window.SUPABASE_CONFIG.anonKey) ? window.SUPABASE_CONFIG : null;
+    const SUPABASE_SDK = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js';
+    const SB_TABLE = 'tugofwar';
+    const CLOUD_NAME = FB_CONF ? 'Firebase' : (SB_CONF ? 'Supabase' : '');
     const bc = ('BroadcastChannel' in window) ? new BroadcastChannel('tugofwar_sync_' + SYNC_ROOM) : null;
     let fbRef = null;
+    let sbClient = null;
     let syncState = 'local';
     let syncErrorMsg = '';
     const pendingGrades = new Set();
@@ -1152,12 +1158,17 @@
       if (bc) {
         bc.onmessage = (e) => {
           const msg = e.data || {};
-          if (msg.type === 'grade' && msg.grade && msg.data && !fbRef) {
+          if (msg.type === 'grade' && msg.grade && msg.data && !CLOUD_NAME) {
             allGradesData[msg.grade] = normalizeGrade(msg.data, msg.grade);
             saveLocalBackup();
             if (msg.grade === currentGrade) renderCurrentGrade();
           }
         };
+      }
+
+      if (SB_CONF) {
+        setupSupabase();
+        return;
       }
 
       if (!FB_CONF) {
@@ -1190,6 +1201,61 @@
         .catch(err => setOnlineStatus('error', '無法載入 Firebase：' + err.message));
     }
 
+    // ----- Supabase：資料表 tugofwar，每個年級一列 (room, grade, data) -----
+    function sbUpsertGrades(grades) {
+      if (!sbClient || !grades.length) return Promise.resolve();
+      const now = new Date().toISOString();
+      const rows = grades.map(g => ({
+        room: SYNC_ROOM,
+        grade: g,
+        data: JSON.parse(JSON.stringify(allGradesData[g])),
+        updated_at: now
+      }));
+      return sbClient.from(SB_TABLE).upsert(rows).then(({ error }) => {
+        if (error) setOnlineStatus('error', error.message);
+      });
+    }
+
+    function setupSupabase() {
+      setOnlineStatus('connecting');
+      loadScript(SUPABASE_SDK)
+        .then(async () => {
+          sbClient = window.supabase.createClient(SB_CONF.url, SB_CONF.anonKey, {
+            auth: { persistSession: false }
+          });
+
+          // 先訂閱即時變更，再讀取現有資料，避免漏掉中間的更新
+          sbClient
+            .channel('tugofwar-' + SYNC_ROOM)
+            .on('postgres_changes',
+              { event: '*', schema: 'public', table: SB_TABLE, filter: 'room=eq.' + SYNC_ROOM },
+              (payload) => {
+                const row = payload.new;
+                if (!row || !row.grade) return;
+                allGradesData[row.grade] = normalizeGrade(row.data, row.grade);
+                saveLocalBackup();
+                if (row.grade === currentGrade) renderCurrentGrade();
+              })
+            .subscribe((status, err) => {
+              if (status === 'SUBSCRIBED') setOnlineStatus('online');
+              else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') setOnlineStatus('error', 'Realtime ' + status + (err ? '：' + err.message : ''));
+              else if (status === 'CLOSED') setOnlineStatus('connecting');
+            });
+
+          const { data, error } = await sbClient.from(SB_TABLE).select('grade,data').eq('room', SYNC_ROOM);
+          if (error) throw error;
+          if (!data.length) {
+            // 雲端尚無資料：由管理者端上傳目前資料作為初始值
+            if (!IS_VIEW_ONLY) await sbUpsertGrades(Object.keys(allGradesData));
+            return;
+          }
+          const merged = { ...allGradesData };
+          data.forEach(r => { merged[r.grade] = r.data; });
+          applyRemote(merged);
+        })
+        .catch(err => setOnlineStatus('error', 'Supabase：' + (err && err.message)));
+    }
+
     function setOnlineStatus(state, msg) {
       syncState = state;
       syncErrorMsg = msg || '';
@@ -1200,9 +1266,9 @@
       const roomTag = SYNC_ROOM !== 'default' ? `（${SYNC_ROOM}）` : '';
       const viewTag = IS_VIEW_ONLY ? '｜唯讀' : '';
       text.textContent = {
-        online: `🟢 雲端同步中${roomTag}${viewTag}`,
-        connecting: `🟡 雲端連線中…${viewTag}`,
-        error: `🔴 雲端同步失敗${viewTag}`,
+        online: `🟢 ${CLOUD_NAME} 同步中${roomTag}${viewTag}`,
+        connecting: `🟡 ${CLOUD_NAME} 連線中…${viewTag}`,
+        error: `🔴 ${CLOUD_NAME} 同步失敗${viewTag}`,
         local: `💾 單機模式${viewTag}`
       }[state];
       if (state === 'error') console.warn('Sync error:', msg);
@@ -1226,6 +1292,7 @@
       if (!pendingGrades.size) return;
       const grades = [...pendingGrades];
       pendingGrades.clear();
+      if (sbClient) sbUpsertGrades(grades);
       grades.forEach(g => {
         const data = JSON.parse(JSON.stringify(allGradesData[g]));
         if (bc) bc.postMessage({ type: 'grade', grade: g, data });
@@ -2098,10 +2165,10 @@
 
       const info = document.getElementById('connected-clients-info');
       if (syncState === 'online') {
-        info.textContent = '🟢 雲端同步運作中：所有開啟此網址的裝置會即時更新。';
+        info.textContent = '🟢 ' + CLOUD_NAME + ' 雲端同步運作中：所有開啟此網址的裝置會即時更新。';
         info.style.color = '#15803d';
       } else if (syncState === 'local') {
-        info.textContent = '⚠️ 尚未設定 Firebase，目前為單機模式：其他裝置只會看到自己的資料，不會同步。設定方式請見 README。';
+        info.textContent = '⚠️ 尚未設定雲端同步（Firebase 或 Supabase），目前為單機模式：其他裝置只會看到自己的資料，不會同步。設定方式請見 README。';
         info.style.color = '#b45309';
       } else if (syncState === 'error') {
         info.textContent = '🔴 雲端同步失敗：' + syncErrorMsg;
