@@ -1352,16 +1352,20 @@
 
     function flushSync() {
       if (!pendingGrades.size) return;
-      const grades = [...pendingGrades];
+      const grades = [...pendingGrades].filter(g => allGradesData[g]);
       pendingGrades.clear();
+      if (!grades.length) return;
+      // 先複製所有要送出的資料：Firebase 寫入時會立刻觸發本機事件並重設 allGradesData
+      const payload = {};
+      grades.forEach(g => { payload[g] = JSON.parse(JSON.stringify(allGradesData[g])); });
       if (sbClient) sbUpsertGrades(grades);
       grades.forEach(g => {
-        const data = JSON.parse(JSON.stringify(allGradesData[g]));
-        if (bc) bc.postMessage({ type: 'grade', grade: g, data });
-        if (fbRef) {
-          fbRef.child(g).set(data).catch(err => setOnlineStatus('error', err.message));
-        }
+        if (bc) bc.postMessage({ type: 'grade', grade: g, data: payload[g] });
       });
+      if (fbRef) {
+        // 一次寫入多個年級，避免中途被遠端事件覆蓋
+        fbRef.update(payload).catch(err => setOnlineStatus('error', err.message));
+      }
     }
 
     // 匯出 / 匯入 JSON 備份
