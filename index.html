@@ -940,6 +940,7 @@
     <button class="btn-primary" onclick="shuffleTeams()">🎲 重新隨機抽籤</button>
     <button class="btn-warning" onclick="resetMatchResults()">🔄 重設比分 (保留籤位)</button>
     <button class="btn-outline" onclick="restoreOfficialPreset()">📷 還原官方原圖名單</button>
+    <button class="btn-danger" id="btn-delete-grade" onclick="deleteCurrentGrade()">🗑️ 刪除此賽程</button>
     <button class="btn-outline" onclick="window.print()">🖨️ 列印賽程表</button>
     <button class="btn-outline" onclick="exportData()">💾 匯出資料</button>
     <button class="btn-outline" onclick="importData()">📂 匯入資料</button>
@@ -1433,6 +1434,14 @@
       });
       document.querySelectorAll('.grade-tabs .tab-btn').forEach(b => b.classList.toggle('active', b.id === `tab-${currentGrade}`));
 
+      // 已刪除的內建賽程不顯示頁籤；「自訂賽事」不能刪除
+      ['g1', 'g2', 'g3'].forEach(k => {
+        const b = document.getElementById(`tab-${k}`);
+        if (b) b.style.display = allGradesData[k]?.hidden ? 'none' : '';
+      });
+      const delBtn = document.getElementById('btn-delete-grade');
+      if (delBtn) delBtn.style.display = currentGrade === 'custom' ? 'none' : '';
+
       // 「自訂賽事」頁籤顯示 PDF 匯入面板與已匯入清單
       const card = document.getElementById('pdf-import-card');
       if (card) card.style.display = (currentGrade === 'custom' && !IS_VIEW_ONLY) ? '' : 'none';
@@ -1457,6 +1466,21 @@
         if (!list.children.length) {
           list.innerHTML = '<span style="font-size: 0.8rem; color: #94a3b8;">(尚未匯入任何 PDF 賽程)</span>';
         }
+        // 已刪除的內建賽程可在這裡還原
+        ['g1', 'g2', 'g3'].filter(k => allGradesData[k]?.hidden).forEach(k => {
+          const item = document.createElement('span');
+          item.className = 'pdf-import-item';
+          item.style.borderStyle = 'dashed';
+          const name = document.createElement('span');
+          name.textContent = `🗑️ 已刪除：${OFFICIAL_PRESETS[k].title}`;
+          name.style.color = '#94a3b8';
+          const back = document.createElement('button');
+          back.textContent = '↺ 還原';
+          back.style.color = '#0369a1';
+          back.onclick = () => restoreDeletedGrade(k);
+          item.append(name, back);
+          list.appendChild(item);
+        });
       }
     }
 
@@ -1512,6 +1536,32 @@
         }
         updateStatusContent(ok.length ? `✅ 已匯入：<strong>${ok.join('、')}</strong>` : '⚠️ 沒有匯入任何賽程');
         if (failed.length) alert('以下檔案無法匯入：\n\n' + failed.join('\n'));
+    }
+
+    // 刪除目前頁籤的賽程（「自訂賽事」除外）
+    function deleteCurrentGrade() {
+      if (IS_VIEW_ONLY || currentGrade === 'custom') return;
+      const key = currentGrade;
+      if (isImportedGrade(key)) { removeImportedGrade(key); return; }
+      const g = allGradesData[key];
+      if (!confirm(`確定要刪除「${g.title}」嗎？\n頁籤與比賽結果會從所有連線裝置移除；之後可在「⚙️ 自訂賽事」還原成官方原始名單。`)) return;
+      allGradesData[key] = { title: g.title, hidden: true, teams: [], results: {} };
+      pendingGrades.add(key);
+      saveLocalBackup();
+      flushSync();
+      currentGrade = ['g1', 'g2', 'g3'].find(k => !allGradesData[k].hidden) || importedGradeKeys()[0] || 'custom';
+      renderCurrentGrade();
+      updateStatusContent(`🗑️ 已刪除賽程：<strong>${escapeHtml(g.title)}</strong>`);
+    }
+
+    function restoreDeletedGrade(key) {
+      if (IS_VIEW_ONLY || !OFFICIAL_PRESETS[key]) return;
+      allGradesData[key] = JSON.parse(JSON.stringify(OFFICIAL_PRESETS[key]));
+      pendingGrades.add(key);
+      saveLocalBackup();
+      flushSync();
+      switchGrade(key);
+      updateStatusContent(`↺ 已還原賽程：<strong>${escapeHtml(allGradesData[key].title)}</strong>`);
     }
 
     function removeImportedGrade(key) {
