@@ -835,6 +835,39 @@
     body.view-only .team-manager-card,
     body.view-only .toolbar { display: none !important; }
     body.view-only #bracket-container button { cursor: default; }
+    body.view-only .pdf-import-card { display: none !important; }
+
+    /* PDF 匯入賽程 */
+    .pdf-import-card {
+      width: 100%;
+      max-width: 1360px;
+      background: #f0f9ff;
+      border: 1px dashed #38bdf8;
+      border-radius: 12px;
+      padding: 12px 18px;
+      margin-bottom: 14px;
+    }
+    .pdf-import-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+    .pdf-import-title { font-weight: 800; color: #0369a1; }
+    .pdf-import-hint { font-size: 0.8rem; color: var(--text-muted); margin-top: 4px; }
+    .pdf-import-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .pdf-import-item {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: #fff; border: 1px solid #bae6fd; border-radius: 8px;
+      padding: 4px 8px; font-size: 0.82rem;
+    }
+    .pdf-import-item button { border: none; background: none; cursor: pointer; color: var(--danger); font-size: 0.8rem; }
+    .pdf-import-item a { color: #0369a1; cursor: pointer; font-weight: 700; text-decoration: none; }
+    .bracket-container.has-meta .match-layer { height: 86px; }
+    .match-meta {
+      font-size: 0.62rem;
+      color: #64748b;
+      text-align: center;
+      padding: 1px 4px;
+      background: #f8fafc;
+      border-bottom: 1px solid #e2e8f0;
+      white-space: nowrap;
+    }
   </style>
 </head>
 <body>
@@ -850,6 +883,7 @@
       <button class="tab-btn active" id="tab-g1" onclick="switchGrade('g1')">🥇 高一拔河 (15隊)</button>
       <button class="tab-btn" id="tab-g2" onclick="switchGrade('g2')">🥈 高二拔河 (17隊)</button>
       <button class="tab-btn" id="tab-g3" onclick="switchGrade('g3')">🥉 高三拔河 (13隊)</button>
+      <span id="imported-tabs" style="display: contents;"></span>
       <button class="tab-btn" id="tab-custom" onclick="switchGrade('custom')">⚙️ 自訂賽事</button>
     </div>
     <div class="sync-status-group">
@@ -869,6 +903,19 @@
     </div>
     <div class="subtitle" id="grade-subtitle">點選獲勝班級即可自動晉級 ｜ 所有連線設備即時同步顯示戰況</div>
   </header>
+
+  <!-- PDF 匯入賽程（在「自訂賽事」頁籤顯示） -->
+  <div class="pdf-import-card" id="pdf-import-card" style="display: none;">
+    <div class="pdf-import-head">
+      <div>
+        <div class="pdf-import-title">📄 匯入 PDF 賽程表</div>
+        <div class="pdf-import-hint">可一次選多個 PDF，每個檔案會新增一個頁籤。支援單淘汰樹狀賽程表（場次【1】、時間、場地、最下方隊伍與籤號），須為可選取文字的 PDF。</div>
+      </div>
+      <button class="btn-primary" onclick="importPdfSchedules()">📄 選擇 PDF 檔案…</button>
+      <input type="file" id="pdf-file-input" accept=".pdf,application/pdf" multiple hidden onchange="handlePdfFiles(this)">
+    </div>
+    <div class="pdf-import-list" id="pdf-import-list"></div>
+  </div>
 
   <!-- 隊伍管理面板 (支援任意增加/刪除隊伍) -->
   <div class="team-manager-card">
@@ -993,6 +1040,7 @@
   <!-- 雲端同步設定 (Firebase，可留空＝單機模式) -->
   <script src="firebase-config.js"></script>
   <script src="supabase-config.js"></script>
+  <script src="pdf-import.js"></script>
 
   <!-- QR Code 產生庫 -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
@@ -1121,11 +1169,25 @@
       g = g || fallback;
       let teams = g.teams || [];
       if (!Array.isArray(teams)) teams = Object.values(teams);
-      return {
+      const out = {
         title: g.title || fallback.title,
         teams: teams.filter(t => t !== null && t !== undefined && t !== ''),
         results: (g.results && typeof g.results === 'object') ? g.results : {}
       };
+      // PDF 匯入的賽程：保留原始樹狀結構與頁籤名稱
+      if (g.label) out.label = g.label;
+      if (g.hidden) out.hidden = true;
+      if (g.layout && g.layout.matches) {
+        let ms = g.layout.matches;
+        if (!Array.isArray(ms)) ms = Object.values(ms);
+        ms = ms.filter(m => m && m.id && m.a && m.b);
+        if (ms.length) out.layout = { source: g.layout.source || 'pdf', matches: ms };
+      }
+      return out;
+    }
+
+    function isImportedGrade(key) {
+      return !OFFICIAL_PRESETS[key];
     }
 
     function normalizeAll(data) {
@@ -1335,6 +1397,7 @@
 
     // 切換年級分頁
     function switchGrade(gradeKey) {
+      if (!allGradesData[gradeKey] || allGradesData[gradeKey].hidden) gradeKey = 'custom';
       currentGrade = gradeKey;
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       document.getElementById(`tab-${gradeKey}`)?.classList.add('active');
@@ -1343,8 +1406,128 @@
       updateStatusContent(`切換至 <strong>${allGradesData[gradeKey].title}</strong>`);
     }
 
+    // ===== PDF 匯入的賽程頁籤 =====
+    function importedGradeKeys() {
+      return Object.keys(allGradesData)
+        .filter(k => isImportedGrade(k) && !allGradesData[k].hidden && allGradesData[k].teams.length >= 2)
+        .sort((a, b) => (allGradesData[a].label || '').localeCompare(allGradesData[b].label || '', 'zh-Hant'));
+    }
+
+    function renderGradeTabs() {
+      const holder = document.getElementById('imported-tabs');
+      if (!holder) return;
+      holder.innerHTML = '';
+      importedGradeKeys().forEach(k => {
+        const g = allGradesData[k];
+        const btn = document.createElement('button');
+        btn.className = 'tab-btn' + (k === currentGrade ? ' active' : '');
+        btn.id = `tab-${k}`;
+        btn.textContent = `🏀 ${g.label || g.title} (${g.teams.length}隊)`;
+        btn.title = g.title;
+        btn.onclick = () => switchGrade(k);
+        holder.appendChild(btn);
+      });
+      document.querySelectorAll('.grade-tabs .tab-btn').forEach(b => b.classList.toggle('active', b.id === `tab-${currentGrade}`));
+
+      // 「自訂賽事」頁籤顯示 PDF 匯入面板與已匯入清單
+      const card = document.getElementById('pdf-import-card');
+      if (card) card.style.display = (currentGrade === 'custom' && !IS_VIEW_ONLY) ? '' : 'none';
+      const list = document.getElementById('pdf-import-list');
+      if (list) {
+        list.innerHTML = '';
+        importedGradeKeys().forEach(k => {
+          const g = allGradesData[k];
+          const item = document.createElement('span');
+          item.className = 'pdf-import-item';
+          const link = document.createElement('a');
+          link.textContent = `🏀 ${g.label || g.title}`;
+          link.title = '切換到這個賽程';
+          link.onclick = () => switchGrade(k);
+          const del = document.createElement('button');
+          del.textContent = '✕ 移除';
+          del.title = '移除這個匯入的賽程';
+          del.onclick = () => removeImportedGrade(k);
+          item.append(link, del);
+          list.appendChild(item);
+        });
+        if (!list.children.length) {
+          list.innerHTML = '<span style="font-size: 0.8rem; color: #94a3b8;">(尚未匯入任何 PDF 賽程)</span>';
+        }
+      }
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    function gradeKeyForTitle(title) {
+      let h = 0;
+      for (const ch of title) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+      return 'pdf_' + h.toString(36);
+    }
+
+    function importPdfSchedules() {
+      if (IS_VIEW_ONLY) return;
+      if (!window.PdfBracketImport) {
+        alert('找不到 PDF 匯入元件（pdf-import.js），請確認檔案已上傳。');
+        return;
+      }
+      document.getElementById('pdf-file-input').click();
+    }
+
+    async function handlePdfFiles(input) {
+        const files = [...input.files];
+        input.value = '';
+        if (!files.length || IS_VIEW_ONLY) return;
+        updateStatusContent(`📄 正在讀取 ${files.length} 個 PDF…`);
+        const ok = [], failed = [];
+        let lastKey = null;
+        for (const file of files) {
+          try {
+            const p = await PdfBracketImport.parsePdfFile(file);
+            const key = gradeKeyForTitle(p.title || file.name);
+            const old = allGradesData[key];
+            if (old && !old.hidden && Object.keys(old.results || {}).length &&
+                !confirm(`「${p.label}」已經匯入過，而且有比賽結果。\n要用這個 PDF 覆蓋（比賽結果會清除）嗎？`)) {
+              continue;
+            }
+            allGradesData[key] = { title: p.title || p.label, label: p.label, teams: p.teams, results: {}, layout: p.layout };
+            pendingGrades.add(key);
+            lastKey = key;
+            ok.push(`${escapeHtml(p.label)}（${p.teams.length} 隊、${p.layout.matches.length} 場）`);
+          } catch (err) {
+            failed.push(`${file.name}：${err.message}`);
+          }
+        }
+        if (lastKey) {
+          saveLocalBackup();
+          flushSync();
+          switchGrade(lastKey);
+        } else {
+          renderCurrentGrade();
+        }
+        updateStatusContent(ok.length ? `✅ 已匯入：<strong>${ok.join('、')}</strong>` : '⚠️ 沒有匯入任何賽程');
+        if (failed.length) alert('以下檔案無法匯入：\n\n' + failed.join('\n'));
+    }
+
+    function removeImportedGrade(key) {
+      const g = allGradesData[key];
+      if (!g || !isImportedGrade(key)) return;
+      if (!confirm(`確定要移除「${g.label || g.title}」這個匯入的賽程嗎？比賽結果也會一併刪除。`)) return;
+      // 以「隱藏」標記移除，讓所有同步裝置一起消失
+      allGradesData[key] = { title: g.title, label: g.label, hidden: true, teams: [], results: {} };
+      pendingGrades.add(key);
+      saveLocalBackup();
+      flushSync();
+      if (currentGrade === key) currentGrade = 'custom';
+      renderCurrentGrade();
+      updateStatusContent(`🗑️ 已移除匯入的賽程：<strong>${escapeHtml(g.label || g.title)}</strong>`);
+    }
+
     // 渲染當前年級賽程表
     function renderCurrentGrade() {
+      if (!allGradesData[currentGrade] || allGradesData[currentGrade].hidden) currentGrade = 'custom';
+      renderGradeTabs();
       const gData = allGradesData[currentGrade];
       document.getElementById('grade-title-text').textContent = gData.title;
 
@@ -1381,6 +1564,11 @@
       });
 
       document.getElementById('team-count-badge').textContent = `參賽：${teams.length} 隊`;
+      const layout = getActiveLayout();
+      if (layout) {
+        document.getElementById('bracket-spec-text').textContent = `(依 PDF 原始賽程 ｜ 共 ${layout.matches.length} 場)`;
+        return;
+      }
       const s = getNextPowerOfTwo(teams.length);
       const byes = s - teams.length;
       document.getElementById('bracket-spec-text').textContent = `(籤表：${s} 籤 ｜ 輪空：${byes} 隊)`;
@@ -1397,6 +1585,11 @@
     // ==========================================
     function buildBracketTopology(teams, results) {
       const N = teams.length;
+
+      // PDF 匯入的賽程：完全依照 PDF 的對戰結構、場次編號、時間與場地
+      if (getActiveLayout()) {
+        return buildLayoutTopology(teams, getActiveLayout());
+      }
 
       // 若為官方高一（15隊）新版專屬結構特殊處理（完全還原照片 media_1793246086717_ab49d3c3.jpg）
       if (N === 15 && currentGrade === 'g1') {
@@ -1532,6 +1725,78 @@
       return { slots, matches, roundMatchIds };
     }
 
+    // 目前年級若是 PDF 匯入、且隊伍數與 PDF 籤位一致，回傳其樹狀結構
+    function getActiveLayout() {
+      const g = allGradesData[currentGrade];
+      if (!g || !g.layout || !g.layout.matches || !g.layout.matches.length) return null;
+      const maxSlot = Math.max(...g.layout.matches.flatMap(m => [m.a.slot || 0, m.b.slot || 0]));
+      return maxSlot === g.teams.length ? g.layout : null;
+    }
+
+    // PDF 匯入賽程的拓撲：layout.matches = [{ id, a, b, time, court, final?, bronze? }]
+    // a / b 為 { slot: 籤號 } 或 { match: 場次（勝者） } 或 { loser: 場次（敗者） }
+    function buildLayoutTopology(teams, layout) {
+      const slots = teams.map((t, i) => ({ isBye: false, team: t, slotNum: i + 1 }));
+      const matches = {};
+      const toNode = (r) => r.slot ? { type: 'seed', slotNum: r.slot, team: teams[r.slot - 1] }
+        : r.loser ? { type: 'match_lose', matchId: r.loser }
+        : { type: 'match', matchId: r.match };
+
+      layout.matches.forEach(m => {
+        const tag = m.final ? '冠亞軍賽' : (m.bronze ? '季殿軍賽' : '');
+        matches[m.id] = {
+          id: m.id,
+          name: `【${m.id}】${tag}`,
+          meta: [m.time, m.court ? `${m.court} 場地` : ''].filter(Boolean).join('｜'),
+          fromA: toNode(m.a),
+          fromB: toNode(m.b),
+          isFinal: !!m.final,
+          isBronze: !!m.bronze
+        };
+      });
+
+      // 晉級去向
+      Object.values(matches).forEach(def => {
+        [['A', def.fromA], ['B', def.fromB]].forEach(([side, n]) => {
+          if (n.type === 'match' && matches[n.matchId]) {
+            matches[n.matchId].nextWin = def.id;
+            matches[n.matchId].winSlot = side;
+          } else if (n.type === 'match_lose' && matches[n.matchId]) {
+            matches[n.matchId].nextLose = def.id;
+            matches[n.matchId].loseSlot = side;
+          }
+        });
+      });
+
+      // 輪次 = 距離籤位的層數（與 PDF 版面高度一致）
+      const heightMemo = {};
+      const height = (id) => {
+        if (heightMemo[id] !== undefined) return heightMemo[id];
+        const def = matches[id];
+        const h = (n) => n.type === 'match' ? height(n.matchId) : 0;
+        return (heightMemo[id] = Math.max(h(def.fromA), h(def.fromB)) + 1);
+      };
+      const rounds = {};
+      let finalId = null;
+      Object.values(matches).forEach(def => {
+        def.round = height(def.id);
+        if (def.isBronze) return;
+        if (def.isFinal) { finalId = def.id; return; }
+        (rounds[def.round] = rounds[def.round] || []).push(def.id);
+      });
+      const roundMatchIds = Object.keys(rounds).map(Number).sort((a, b) => a - b)
+        .map(r => rounds[r].sort((a, b) => a - b));
+      if (finalId !== null) roundMatchIds.push([finalId]);
+
+      // 直接晉級下一輪（對手是另一場勝者）的籤位標示為輪空保送
+      Object.values(matches).forEach(def => {
+        if (def.fromA.type === 'seed' && def.fromB.type === 'match') slots[def.fromA.slotNum - 1].byeDirect = true;
+        if (def.fromB.type === 'seed' && def.fromA.type === 'match') slots[def.fromB.slotNum - 1].byeDirect = true;
+      });
+
+      return { slots, matches, roundMatchIds };
+    }
+
     // 高一（15隊）新版原圖專屬拓撲生成函式 (完全還原最新照片 media_1793246086717_ab49d3c3.jpg)
     function buildGrade1Topology(teams, results) {
       let slots = teams.map((t, i) => ({ isBye: false, team: t, slotNum: i + 1 }));
@@ -1626,6 +1891,7 @@
       // 籤數越多，畫布越寬，避免比賽盒互相重疊（超出可視範圍時可左右捲動）
       // （相鄰兩場比賽中心相距 2 籤，比賽盒寬 150px，因此每籤至少需 80px）
       container.style.minWidth = `${Math.max(1200, bracketConfig.slots.length * 80)}px`;
+      container.classList.toggle('has-meta', !!getActiveLayout());
 
       // 籤位列
       const seedsRow = document.createElement('div');
@@ -1646,7 +1912,8 @@
           `;
         } else {
           // 是否輪空保送
-          const isByeDirect = (currentGrade === 'g1' && slot.slotNum === 15) || (idx % 2 === 0 && bracketConfig.slots[idx + 1]?.isBye);
+          const isByeDirect = (slot.byeDirect !== undefined) ? slot.byeDirect
+            : (currentGrade === 'g1' && slot.slotNum === 15) || (idx % 2 === 0 && bracketConfig.slots[idx + 1]?.isBye);
           if (isByeDirect) {
             const badge = document.createElement('div');
             badge.className = 'seed-bye-badge';
@@ -1736,6 +2003,13 @@
 
       header.innerHTML = `<span class="match-number">${def.name}</span>${statusHtml}`;
       box.appendChild(header);
+
+      if (def.meta) {
+        const meta = document.createElement('div');
+        meta.className = 'match-meta';
+        meta.textContent = def.meta;
+        box.appendChild(meta);
+      }
 
       const teamsDiv = document.createElement('div');
       teamsDiv.className = 'match-teams';
@@ -2083,6 +2357,7 @@
         alert(`隊伍「${val}」已存在！`);
         return;
       }
+      if (!confirmDropLayout()) return;
       list.push(val);
       input.value = '';
       allGradesData[currentGrade].results = {};
@@ -2097,6 +2372,7 @@
         alert("隊伍數量最少需保留 2 隊！");
         return;
       }
+      if (!confirmDropLayout()) return;
       const removed = list.splice(idx, 1)[0];
       allGradesData[currentGrade].results = {};
       syncUpdateToServer('set_teams', { teams: list });
@@ -2125,7 +2401,20 @@
       updateStatusContent("🔄 比賽結果已重設。");
     }
 
+    // PDF 匯入的賽程若增減隊伍，就無法再對應 PDF 的對戰結構，改用自動籤表
+    function confirmDropLayout() {
+      const g = allGradesData[currentGrade];
+      if (!g.layout) return true;
+      if (!confirm('這是由 PDF 匯入的賽程。增減隊伍後將改用系統自動籤表（不再依照 PDF 的對戰順序），確定嗎？\n（只改隊名請用「批次修改」並保持隊數不變）')) return false;
+      delete g.layout;
+      return true;
+    }
+
     function restoreOfficialPreset() {
+      if (isImportedGrade(currentGrade)) {
+        alert('這是 PDF 匯入的賽程，請到「⚙️ 自訂賽事」重新匯入原始 PDF 即可還原。');
+        return;
+      }
       if (!confirm(`確定要將【${allGradesData[currentGrade].title}】還原成照片原圖的預設籤位嗎？`)) return;
       if (OFFICIAL_PRESETS[currentGrade]) {
         allGradesData[currentGrade] = JSON.parse(JSON.stringify(OFFICIAL_PRESETS[currentGrade]));
@@ -2214,6 +2503,7 @@
         alert("最少需要 2 隊！");
         return;
       }
+      if (list.length !== allGradesData[currentGrade].teams.length && !confirmDropLayout()) return;
       allGradesData[currentGrade].teams = list;
       allGradesData[currentGrade].results = {};
       syncUpdateToServer('set_teams', { teams: list });
