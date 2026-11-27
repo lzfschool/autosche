@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>拔河賽自動賽程系統 - 多人即時同步戰況</title>
+  <title>自動賽程系統 - 多人即時同步戰況</title>
   <style>
     :root {
       --primary: #1e40af;
@@ -868,6 +868,34 @@
       border-bottom: 1px solid #e2e8f0;
       white-space: nowrap;
     }
+
+    /* 結束分組賽程（密碼鎖定） */
+    .btn-lock { background: #0f766e; color: #fff; }
+    .btn-lock.locked { background: #7c3aed; }
+    .lock-banner {
+      max-width: 1200px;
+      margin: 0 auto 10px;
+      padding: 8px 14px;
+      border-radius: 10px;
+      background: #f5f3ff;
+      border: 2px solid #c4b5fd;
+      color: #5b21b6;
+      font-weight: 700;
+      font-size: 0.9rem;
+      text-align: center;
+    }
+    body.grade-locked #bracket-container .team-btn:not(.empty) { cursor: not-allowed; }
+    body.grade-locked .match-box.ready-to-play { animation: none; }
+    body.view-only .lock-banner-admin { display: none; }
+    .pw-field {
+      width: 100%;
+      box-sizing: border-box;
+      font-size: 1.1rem;
+      letter-spacing: 0.3em;
+      text-align: center;
+      margin-top: 6px;
+    }
+    .pw-error { color: #b91c1c; font-size: 0.85rem; min-height: 1.3em; margin-top: 6px; }
   </style>
 </head>
 <body>
@@ -877,7 +905,7 @@
   <!-- 頂部導航列 (切換年級 + 多人同步狀態) -->
   <div class="top-nav">
     <div class="brand-title">
-      🏆 拔河賽自動賽程系統
+      🏆 自動賽程系統
     </div>
     <div class="grade-tabs">
       <button class="tab-btn active" id="tab-g1" onclick="switchGrade('g1')">🥇 高一拔河 (15隊)</button>
@@ -940,10 +968,16 @@
     <button class="btn-primary" onclick="shuffleTeams()">🎲 重新隨機抽籤</button>
     <button class="btn-warning" onclick="resetMatchResults()">🔄 重設比分 (保留籤位)</button>
     <button class="btn-outline" onclick="restoreOfficialPreset()">📷 還原官方原圖名單</button>
+    <button class="btn-lock" id="btn-lock-grade" onclick="toggleGradeLock()">🏁 結束分組賽程</button>
     <button class="btn-danger" id="btn-delete-grade" onclick="deleteCurrentGrade()">🗑️ 刪除此賽程</button>
     <button class="btn-outline" onclick="window.print()">🖨️ 列印賽程表</button>
     <button class="btn-outline" onclick="exportData()">💾 匯出資料</button>
     <button class="btn-outline" onclick="importData()">📂 匯入資料</button>
+  </div>
+
+  <!-- 分組賽程已結束提示 -->
+  <div class="lock-banner" id="lock-banner" style="display: none;">
+    🔒 本分組賽程已結束，成績已鎖定。<span class="lock-banner-admin">如需修改，請按「🔓 重新開放輸入成績」並輸入密碼。</span>
   </div>
 
   <!-- 即時戰況動態條 -->
@@ -1035,6 +1069,23 @@
         <button class="btn-outline" onclick="closeBatchModal()">取消</button>
         <button class="btn-primary" onclick="saveBatchTeams()">確定儲存</button>
       </div>
+    </div>
+  </div>
+
+  <!-- 密碼輸入 Modal（結束 / 重新開放分組賽程） -->
+  <div class="modal-overlay" id="pw-modal">
+    <div class="modal" style="max-width: 380px;">
+      <h2 id="pw-title">🔒 請輸入密碼</h2>
+      <p id="pw-desc" style="font-size: 0.88rem; color: #475569;"></p>
+      <form id="pw-form" autocomplete="off">
+        <input type="password" id="pw-input" class="add-input pw-field" maxlength="32" autocomplete="new-password" inputmode="numeric">
+        <input type="password" id="pw-input2" class="add-input pw-field" maxlength="32" autocomplete="new-password" inputmode="numeric" placeholder="再輸入一次" style="display: none;">
+        <div class="pw-error" id="pw-error"></div>
+        <div class="modal-actions">
+          <button type="button" class="btn-outline" id="pw-cancel">取消</button>
+          <button type="submit" class="btn-primary" id="pw-ok">確定</button>
+        </div>
+      </form>
     </div>
   </div>
 
@@ -1164,6 +1215,10 @@
     let syncState = 'local';
     let syncErrorMsg = '';
     const pendingGrades = new Set();
+    // 管理密碼：資料庫只存 PBKDF2 雜湊（加鹽），網頁原始碼不含密碼
+    const AUTH_KEY = '_auth';
+    let authRecord = null;
+    let cloudLoaded = false;
 
     function normalizeGrade(g, key) {
       const fallback = OFFICIAL_PRESETS[key] || { title: key, teams: [], results: {} };
@@ -1178,6 +1233,7 @@
       // PDF 匯入的賽程：保留原始樹狀結構與頁籤名稱
       if (g.label) out.label = g.label;
       if (g.hidden) out.hidden = true;
+      if (g.locked) out.locked = true;
       if (g.layout && g.layout.matches) {
         let ms = g.layout.matches;
         if (!Array.isArray(ms)) ms = Object.values(ms);
@@ -1195,6 +1251,7 @@
       data = data || {};
       const out = {};
       new Set([...Object.keys(OFFICIAL_PRESETS), ...Object.keys(data)]).forEach(k => {
+        if (k.startsWith('_')) return; // 「_auth」等系統資料不是賽程
         out[k] = normalizeGrade(data[k], k);
       });
       return out;
@@ -1211,6 +1268,8 @@
     }
 
     function applyRemote(data) {
+      cloudLoaded = true;
+      if (data && data[AUTH_KEY]) authRecord = data[AUTH_KEY];
       allGradesData = normalizeAll(data);
       saveLocalBackup();
       renderCurrentGrade();
@@ -1235,6 +1294,7 @@
       }
 
       if (!FB_CONF) {
+        try { authRecord = JSON.parse(localStorage.getItem('dyn_auth_' + SYNC_ROOM)) || null; } catch (e) {}
         setOnlineStatus('local');
         return;
       }
@@ -1252,6 +1312,7 @@
           fbRef.on('value', snap => {
             const val = snap.val();
             if (!val) {
+              cloudLoaded = true;
               // 雲端尚無資料：由管理者端上傳目前資料作為初始值
               if (!IS_VIEW_ONLY) fbRef.set(JSON.parse(JSON.stringify(allGradesData)));
               return;
@@ -1295,6 +1356,8 @@
               (payload) => {
                 const row = payload.new;
                 if (!row || !row.grade) return;
+                if (row.grade === AUTH_KEY) { authRecord = row.data; return; }
+                if (row.grade.startsWith('_')) return;
                 allGradesData[row.grade] = normalizeGrade(row.data, row.grade);
                 saveLocalBackup();
                 if (row.grade === currentGrade) renderCurrentGrade();
@@ -1308,6 +1371,7 @@
           const { data, error } = await sbClient.from(SB_TABLE).select('grade,data').eq('room', SYNC_ROOM);
           if (error) throw error;
           if (!data.length) {
+            cloudLoaded = true;
             // 雲端尚無資料：由管理者端上傳目前資料作為初始值
             if (!IS_VIEW_ONLY) await sbUpsertGrades(Object.keys(allGradesData));
             return;
@@ -1515,6 +1579,10 @@
             const p = await PdfBracketImport.parsePdfFile(file);
             const key = gradeKeyForTitle(p.title || file.name);
             const old = allGradesData[key];
+            if (old && !old.hidden && old.locked) {
+              failed.push(`${file.name}：「${old.label || old.title}」已結束分組賽程，請先重新開放再匯入。`);
+              continue;
+            }
             if (old && !old.hidden && Object.keys(old.results || {}).length &&
                 !confirm(`「${p.label}」已經匯入過，而且有比賽結果。\n要用這個 PDF 覆蓋（比賽結果會清除）嗎？`)) {
               continue;
@@ -1539,12 +1607,15 @@
     }
 
     // 刪除目前頁籤的賽程（「自訂賽事」除外）
-    function deleteCurrentGrade() {
+    async function deleteCurrentGrade() {
       if (IS_VIEW_ONLY || currentGrade === 'custom') return;
+      if (blockIfLocked()) return;
       const key = currentGrade;
       if (isImportedGrade(key)) { removeImportedGrade(key); return; }
       const g = allGradesData[key];
       if (!confirm(`確定要刪除「${g.title}」嗎？\n頁籤與比賽結果會從所有連線裝置移除；之後可在「⚙️ 自訂賽事」還原成官方原始名單。`)) return;
+      if (!await requirePassword('🗑️ 刪除賽程', `刪除「${g.title}」需要輸入管理密碼。`)) return;
+      if (!allGradesData[key] || allGradesData[key].hidden) return;
       allGradesData[key] = { title: g.title, hidden: true, teams: [], results: {} };
       pendingGrades.add(key);
       saveLocalBackup();
@@ -1564,10 +1635,12 @@
       updateStatusContent(`↺ 已還原賽程：<strong>${escapeHtml(allGradesData[key].title)}</strong>`);
     }
 
-    function removeImportedGrade(key) {
+    async function removeImportedGrade(key) {
       const g = allGradesData[key];
-      if (!g || !isImportedGrade(key)) return;
+      if (!g || !isImportedGrade(key) || IS_VIEW_ONLY) return;
       if (!confirm(`確定要移除「${g.label || g.title}」這個匯入的賽程嗎？比賽結果也會一併刪除。`)) return;
+      if (!await requirePassword('🗑️ 刪除賽程', `刪除「${g.label || g.title}」需要輸入管理密碼。`)) return;
+      if (!allGradesData[key] || allGradesData[key].hidden) return;
       // 以「隱藏」標記移除，讓所有同步裝置一起消失
       allGradesData[key] = { title: g.title, label: g.label, hidden: true, teams: [], results: {} };
       pendingGrades.add(key);
@@ -1578,12 +1651,166 @@
       updateStatusContent(`🗑️ 已移除匯入的賽程：<strong>${escapeHtml(g.label || g.title)}</strong>`);
     }
 
+    // ===== 結束分組賽程（密碼鎖定） =====
+    const PW_ITER = 200000;
+
+    function bytesToHex(buf) {
+      return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    async function hashPassword(pw, saltHex, iter) {
+      const salt = new Uint8Array(saltHex.match(/../g).map(h => parseInt(h, 16)));
+      const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveBits']);
+      const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: iter }, key, 256);
+      return bytesToHex(bits);
+    }
+
+    async function checkPassword(pw) {
+      if (!authRecord || !authRecord.hash || !authRecord.salt) return false;
+      const h = await hashPassword(pw, authRecord.salt, Number(authRecord.iter) || PW_ITER);
+      return h === authRecord.hash;
+    }
+
+    async function saveNewPassword(pw) {
+      const salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)));
+      const rec = { algo: 'PBKDF2-SHA256', iter: PW_ITER, salt, hash: await hashPassword(pw, salt, PW_ITER) };
+      if (fbRef) await fbRef.child(AUTH_KEY).set(rec);
+      else if (sbClient) {
+        const { error } = await sbClient.from(SB_TABLE).upsert([{ room: SYNC_ROOM, grade: AUTH_KEY, data: rec, updated_at: new Date().toISOString() }]);
+        if (error) throw error;
+      } else {
+        try { localStorage.setItem('dyn_auth_' + SYNC_ROOM, JSON.stringify(rec)); } catch (e) {}
+      }
+      authRecord = rec;
+    }
+
+    // 連續輸錯 5 次暫停 30 秒
+    let pwFails = 0, pwBlockedUntil = 0;
+
+    // 開啟密碼視窗，回傳 Promise<boolean>（密碼正確或設定完成才是 true）
+    function openPasswordModal({ title, desc, setup = false }) {
+      return new Promise(resolve => {
+        const modal = document.getElementById('pw-modal');
+        const form = document.getElementById('pw-form');
+        const input = document.getElementById('pw-input');
+        const input2 = document.getElementById('pw-input2');
+        const err = document.getElementById('pw-error');
+        const okBtn = document.getElementById('pw-ok');
+        const cancelBtn = document.getElementById('pw-cancel');
+        document.getElementById('pw-title').textContent = title;
+        document.getElementById('pw-desc').textContent = desc;
+        input.value = ''; input2.value = ''; err.textContent = '';
+        input.placeholder = setup ? '設定新密碼（至少 4 碼）' : '請輸入密碼';
+        input2.style.display = setup ? '' : 'none';
+        okBtn.disabled = false;
+        modal.style.display = 'flex';
+        setTimeout(() => input.focus(), 50);
+
+        const finish = (ok) => {
+          modal.style.display = 'none';
+          input.value = ''; input2.value = '';
+          form.onsubmit = null;
+          cancelBtn.onclick = null;
+          resolve(ok);
+        };
+        cancelBtn.onclick = () => finish(false);
+        form.onsubmit = async (e) => {
+          e.preventDefault();
+          const pw = input.value;
+          if (setup) {
+            if (pw.length < 4) { err.textContent = '密碼至少 4 碼。'; return; }
+            if (pw !== input2.value) { err.textContent = '兩次輸入的密碼不一致。'; return; }
+            okBtn.disabled = true;
+            try { await saveNewPassword(pw); finish(true); }
+            catch (ex) { err.textContent = '密碼存入資料庫失敗：' + (ex && ex.message); okBtn.disabled = false; }
+            return;
+          }
+          const wait = Math.ceil((pwBlockedUntil - Date.now()) / 1000);
+          if (wait > 0) { err.textContent = `輸入錯誤太多次，請 ${wait} 秒後再試。`; return; }
+          okBtn.disabled = true;
+          const ok = await checkPassword(pw);
+          okBtn.disabled = false;
+          if (ok) { pwFails = 0; finish(true); return; }
+          pwFails++;
+          input.value = '';
+          input.focus();
+          if (pwFails >= 5) { pwFails = 0; pwBlockedUntil = Date.now() + 30000; err.textContent = '密碼錯誤 5 次，請 30 秒後再試。'; }
+          else err.textContent = '密碼錯誤，請再試一次。';
+        };
+      });
+    }
+
+    async function requirePassword(title, desc) {
+      if (CLOUD_NAME && !cloudLoaded) {
+        alert('尚未連上資料庫，無法驗證密碼，請稍後再試。');
+        return false;
+      }
+      if (!authRecord) {
+        return openPasswordModal({
+          title: '🔑 設定管理密碼',
+          desc: '這個賽程尚未設定管理密碼。請設定一組密碼（只會以加密雜湊存入資料庫），之後結束或重新開放分組賽程都需要輸入。',
+          setup: true
+        });
+      }
+      return openPasswordModal({ title, desc });
+    }
+
+    function isGradeLocked(key = currentGrade) {
+      return !!(allGradesData[key] && allGradesData[key].locked);
+    }
+
+    function setGradeLocked(key, locked) {
+      const g = allGradesData[key];
+      if (!g) return;
+      if (locked) g.locked = true; else delete g.locked;
+      pendingGrades.add(key);
+      saveLocalBackup();
+      flushSync();
+      renderCurrentGrade();
+    }
+
+    async function unlockGrade(key) {
+      const g = allGradesData[key];
+      const ok = await requirePassword('🔓 重新開放輸入成績', `「${g.title}」已結束。輸入密碼後即可重新輸入或修改成績。`);
+      if (!ok || !allGradesData[key]) return false;
+      setGradeLocked(key, false);
+      updateStatusContent(`🔓 已重新開放「<strong>${escapeHtml(allGradesData[key].title)}</strong>」輸入成績`);
+      return true;
+    }
+
+    async function toggleGradeLock() {
+      if (IS_VIEW_ONLY) return;
+      const key = currentGrade;
+      const g = allGradesData[key];
+      if (!g) return;
+      if (g.locked) { await unlockGrade(key); return; }
+      const ok = await requirePassword('🏁 結束分組賽程', `結束「${g.title}」後將無法再輸入成績，需輸入密碼才能重新開放。`);
+      if (!ok || !allGradesData[key]) return;
+      setGradeLocked(key, true);
+      updateStatusContent(`🏁 「<strong>${escapeHtml(allGradesData[key].title)}</strong>」分組賽程已結束，成績已鎖定`);
+    }
+
+    // 已結束的分組：擋下修改動作，並提供輸入密碼重新開放
+    function blockIfLocked() {
+      if (!isGradeLocked()) return false;
+      unlockGrade(currentGrade);
+      return true;
+    }
+
     // 渲染當前年級賽程表
     function renderCurrentGrade() {
       if (!allGradesData[currentGrade] || allGradesData[currentGrade].hidden) currentGrade = 'custom';
       renderGradeTabs();
       const gData = allGradesData[currentGrade];
       document.getElementById('grade-title-text').textContent = gData.title;
+
+      // 結束分組賽程：鎖定狀態
+      const locked = !!gData.locked;
+      document.body.classList.toggle('grade-locked', locked);
+      document.getElementById('lock-banner').style.display = locked ? '' : 'none';
+      const lockBtn = document.getElementById('btn-lock-grade');
+      lockBtn.textContent = locked ? '🔓 重新開放輸入成績' : '🏁 結束分組賽程';
+      lockBtn.classList.toggle('locked', locked);
 
       // 渲染隊伍晶片
       renderTeamChips(gData.teams);
@@ -2146,6 +2373,7 @@
       const results = allGradesData[currentGrade].results;
 
       if (IS_VIEW_ONLY || !chosenTeam) return;
+      if (blockIfLocked()) return;
 
       if (results[matchId] === side) {
         delete results[matchId];
@@ -2406,6 +2634,7 @@
       const input = document.getElementById('new-team-name');
       const val = input.value.trim();
       if (!val) return;
+      if (blockIfLocked()) return;
       const list = allGradesData[currentGrade].teams;
       if (list.includes(val)) {
         alert(`隊伍「${val}」已存在！`);
@@ -2421,6 +2650,7 @@
     }
 
     function removeTeam(idx) {
+      if (blockIfLocked()) return;
       const list = allGradesData[currentGrade].teams;
       if (list.length <= 2) {
         alert("隊伍數量最少需保留 2 隊！");
@@ -2435,6 +2665,7 @@
     }
 
     function shuffleTeams() {
+      if (blockIfLocked()) return;
       if (!confirm("確定要隨機打亂籤位嗎？現有的勝負進度將重設。")) return;
       const list = allGradesData[currentGrade].teams;
       for (let i = list.length - 1; i > 0; i--) {
@@ -2448,6 +2679,7 @@
     }
 
     function resetMatchResults() {
+      if (blockIfLocked()) return;
       if (!confirm("確定要重設目前年級的比賽結果嗎？")) return;
       allGradesData[currentGrade].results = {};
       syncUpdateToServer('reset_results');
@@ -2465,6 +2697,7 @@
     }
 
     function restoreOfficialPreset() {
+      if (blockIfLocked()) return;
       if (isImportedGrade(currentGrade)) {
         alert('這是 PDF 匯入的賽程，請到「⚙️ 自訂賽事」重新匯入原始 PDF 即可還原。');
         return;
@@ -2542,6 +2775,7 @@
 
     // 批次修改 Modal
     function openBatchModal() {
+      if (blockIfLocked()) return;
       document.getElementById('batch-input').value = allGradesData[currentGrade].teams.join('\n');
       document.getElementById('batch-modal').style.display = 'flex';
     }
