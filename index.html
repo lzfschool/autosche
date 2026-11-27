@@ -895,6 +895,24 @@
       text-align: center;
       margin-top: 6px;
     }
+    /* 圖片賽程編輯視窗 */
+    .img-modal { max-width: 1100px; width: 96vw; max-height: 94vh; overflow: auto; }
+    .img-editor { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 14px; margin-top: 8px; }
+    .img-pane { max-height: 68vh; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: #f8fafc; }
+    .img-pane img { display: block; width: 100%; cursor: zoom-in; }
+    .img-pane img.zoom { width: 220%; cursor: zoom-out; }
+    .img-form { display: flex; flex-direction: column; gap: 8px; font-size: 0.85rem; min-width: 0; }
+    .img-form label { font-weight: 700; color: #334155; display: flex; flex-direction: column; gap: 4px; }
+    .img-form label.inline { flex-direction: row; align-items: center; gap: 6px; }
+    .img-form textarea { height: 150px; }
+    .img-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    .img-table th, .img-table td { border: 1px solid #e2e8f0; padding: 3px 4px; text-align: left; }
+    .img-table th { background: #f1f5f9; }
+    .img-table select, .img-table input { width: 100%; font-size: 0.8rem; padding: 2px; }
+    .img-id { white-space: nowrap; font-weight: 700; color: var(--primary); }
+    .img-note { color: #64748b; font-size: 0.8rem; }
+    .img-error { color: #b91c1c; font-weight: 700; min-height: 1.3em; margin-top: 8px; }
+    @media (max-width: 800px) { .img-editor { grid-template-columns: 1fr; } .img-pane { max-height: 40vh; } }
     .pw-error { color: #b91c1c; font-size: 0.85rem; min-height: 1.3em; margin-top: 6px; }
   </style>
 </head>
@@ -937,10 +955,10 @@
     <div class="pdf-import-head">
       <div>
         <div class="pdf-import-title">📄 匯入 PDF 賽程表</div>
-        <div class="pdf-import-hint">可一次選多個 PDF，每個檔案會新增一個頁籤。支援單淘汰樹狀賽程表（場次【1】、時間、場地、最下方隊伍與籤號），須為可選取文字的 PDF。</div>
+        <div class="pdf-import-hint">可一次選多個檔案，每個檔案會新增一個頁籤。<br>・PDF：自動辨識單淘汰樹狀賽程表（場次【1】或（一）、日期時間、場地、最下方籤號與隊名），須為可選取文字的 PDF。<br>・圖片（JPG、PNG，如手機翻拍）：會開啟編輯視窗，對照圖片輸入隊名並確認每場對戰。</div>
       </div>
       <button class="btn-primary" onclick="importPdfSchedules()">📄 選擇賽程PDF檔案</button>
-      <input type="file" id="pdf-file-input" accept=".pdf,application/pdf" multiple hidden onchange="handlePdfFiles(this)">
+      <input type="file" id="pdf-file-input" accept=".pdf,application/pdf,image/*" multiple hidden onchange="handlePdfFiles(this)">
     </div>
     <div class="pdf-import-list" id="pdf-import-list"></div>
   </div>
@@ -1068,6 +1086,28 @@
       <div class="modal-actions">
         <button class="btn-outline" onclick="closeBatchModal()">取消</button>
         <button class="btn-primary" onclick="saveBatchTeams()">確定儲存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 圖片賽程編輯 Modal -->
+  <div class="modal-overlay" id="img-modal">
+    <div class="modal img-modal">
+      <h2>🖼️ 從圖片建立賽程</h2>
+      <p class="img-note">圖片無法自動辨識文字。請對照圖片輸入隊名（依籤號 1、2、3… 由左到右），再確認每一場的對戰雙方；點圖片可放大。（<span id="img-file-name"></span>）</p>
+      <div class="img-editor">
+        <div class="img-pane"><img id="img-preview" alt="賽程圖片" onclick="this.classList.toggle('zoom')"></div>
+        <div class="img-form">
+          <label>賽程名稱<input id="img-title" class="add-input" maxlength="60"></label>
+          <label>隊伍（每行一隊，依籤號順序）<textarea id="img-teams" placeholder="例：&#10;103&#10;105&#10;111"></textarea></label>
+          <label class="inline"><input type="checkbox" id="img-bronze"> 有季殿軍賽（場次編號 = 隊數－1，冠亞軍賽 = 隊數）</label>
+          <div id="img-matches"></div>
+        </div>
+      </div>
+      <div class="img-error" id="img-error"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn-outline" id="img-cancel">取消</button>
+        <button type="button" class="btn-primary" id="img-ok">✅ 建立賽程</button>
       </div>
     </div>
   </div>
@@ -1540,7 +1580,7 @@
         const btn = document.createElement('button');
         btn.className = 'tab-btn' + (k === currentGrade ? ' active' : '');
         btn.id = `tab-${k}`;
-        btn.textContent = `🏀 ${g.label || g.title} (${g.teams.length}隊)`;
+        btn.textContent = `${sportIcon(g)} ${g.label || g.title} (${g.teams.length}隊)`;
         btn.title = g.title;
         btn.onclick = () => switchGrade(k);
         holder.appendChild(btn);
@@ -1566,7 +1606,7 @@
           const item = document.createElement('span');
           item.className = 'pdf-import-item';
           const link = document.createElement('a');
-          link.textContent = `🏀 ${g.label || g.title}`;
+          link.textContent = `${sportIcon(g)} ${g.label || g.title}`;
           link.title = '切換到這個賽程';
           link.onclick = () => switchGrade(k);
           const del = document.createElement('button');
@@ -1616,29 +1656,54 @@
       document.getElementById('pdf-file-input').click();
     }
 
+    function sportIcon(g) {
+      const t = `${g.title || ''}${g.label || ''}`;
+      if (/棒球|壘球/.test(t)) return '⚾';
+      if (/籃球/.test(t)) return '🏀';
+      if (/排球/.test(t)) return '🏐';
+      if (/足球/.test(t)) return '⚽';
+      if (/羽球|羽毛球/.test(t)) return '🏸';
+      if (/桌球/.test(t)) return '🏓';
+      if (/拔河/.test(t)) return '🪢';
+      return '🏆';
+    }
+
+    function isImageFile(file) {
+      return /^image\//.test(file.type) || /\.(jpe?g|png|gif|webp|bmp)$/i.test(file.name);
+    }
+
+    // 匯入前檢查：已結束的分組不可覆蓋；已有比賽結果要確認
+    function canReplaceGrade(key, label, failed, fileName) {
+      const old = allGradesData[key];
+      if (old && !old.hidden && old.locked) {
+        failed.push(`${fileName}：「${old.label || old.title}」已結束分組賽程，請先重新開放再匯入。`);
+        return false;
+      }
+      if (old && !old.hidden && Object.keys(old.results || {}).length &&
+          !confirm(`「${label}」已經匯入過，而且有比賽結果。\n要用這個檔案覆蓋（比賽結果會清除）嗎？`)) {
+        return false;
+      }
+      return true;
+    }
+
     async function handlePdfFiles(input) {
         const files = [...input.files];
         input.value = '';
         if (!files.length || IS_VIEW_ONLY) return;
-        updateStatusContent(`📄 正在讀取 ${files.length} 個 PDF…`);
+        const pdfs = files.filter(f => !isImageFile(f));
+        const images = files.filter(isImageFile);
         const ok = [], failed = [];
-        let lastKey = null;
-        for (const file of files) {
+        let lastKey = null, needNames = false;
+        if (pdfs.length) updateStatusContent(`📄 正在讀取 ${pdfs.length} 個 PDF…`);
+        for (const file of pdfs) {
           try {
             const p = await PdfBracketImport.parsePdfFile(file);
             const key = gradeKeyForTitle(p.title || file.name);
-            const old = allGradesData[key];
-            if (old && !old.hidden && old.locked) {
-              failed.push(`${file.name}：「${old.label || old.title}」已結束分組賽程，請先重新開放再匯入。`);
-              continue;
-            }
-            if (old && !old.hidden && Object.keys(old.results || {}).length &&
-                !confirm(`「${p.label}」已經匯入過，而且有比賽結果。\n要用這個 PDF 覆蓋（比賽結果會清除）嗎？`)) {
-              continue;
-            }
+            if (!canReplaceGrade(key, p.label, failed, file.name)) continue;
             allGradesData[key] = { title: p.title || p.label, label: p.label, teams: p.teams, results: {}, layout: p.layout };
             pendingGrades.add(key);
             lastKey = key;
+            if (p.teams.every(t => /^第\d+籤$/.test(t))) needNames = true;
             ok.push(`${escapeHtml(p.label)}（${p.teams.length} 隊、${p.layout.matches.length} 場）`);
           } catch (err) {
             failed.push(`${file.name}：${err.message}`);
@@ -1647,12 +1712,182 @@
         if (lastKey) {
           saveLocalBackup();
           flushSync();
-          switchGrade(lastKey);
-        } else {
-          renderCurrentGrade();
         }
-        updateStatusContent(ok.length ? `✅ 已匯入：<strong>${ok.join('、')}</strong>` : '⚠️ 沒有匯入任何賽程');
+        // 圖片：逐一開啟編輯視窗
+        for (const file of images) {
+          const res = await openImageScheduleEditor(file, failed);
+          if (res) { lastKey = res.key; ok.push(`${escapeHtml(res.label)}（${res.teams} 隊）`); }
+        }
+        if (lastKey) switchGrade(lastKey);
+        else renderCurrentGrade();
+        let msg = ok.length ? `✅ 已匯入：<strong>${ok.join('、')}</strong>` : '⚠️ 沒有匯入任何賽程';
+        if (needNames) msg += '　｜PDF 沒有隊名，請用「📋 批次修改」依籤號順序輸入隊名（隊數不變即可保留原賽程）。';
+        updateStatusContent(msg);
         if (failed.length) alert('以下檔案無法匯入：\n\n' + failed.join('\n'));
+    }
+
+    // ===== 圖片賽程：對照圖片輸入隊名、確認每場對戰 =====
+    // 場次編號慣例（與紙本賽程相同）：一般場次 1…n-2，季殿軍賽 n-1，冠亞軍賽 n（無季殿軍賽時冠亞軍賽為 n-1）
+    let imgEd = null; // { n, rows: [{ id: 數字 | 'F', a: 's籤號' | 'm場次', b, meta }] }
+
+    function defaultImageRows(n) {
+      let cur = Array.from({ length: n }, (_, i) => 's' + (i + 1));
+      const rows = [];
+      let id = 1;
+      while (cur.length > 2) {
+        const next = [];
+        for (let i = 0; i < cur.length; i += 2) {
+          if (i + 1 < cur.length) {
+            rows.push({ id, a: cur[i], b: cur[i + 1], meta: '' });
+            next.push('m' + id);
+            id++;
+          } else next.push(cur[i]);
+        }
+        cur = next;
+      }
+      rows.push({ id: 'F', a: cur[0], b: cur[1], meta: '' });
+      return rows;
+    }
+
+    function imgTeamList() {
+      return document.getElementById('img-teams').value.split(/\n/).map(s => s.trim()).filter(Boolean);
+    }
+
+    function renderImageRows() {
+      const teams = imgTeamList();
+      const n = teams.length;
+      const box = document.getElementById('img-matches');
+      const bronzeEl = document.getElementById('img-bronze');
+      const wasDisabled = bronzeEl.disabled;
+      bronzeEl.disabled = n < 4;
+      if (n < 4) bronzeEl.checked = false;
+      else if (wasDisabled) bronzeEl.checked = true; // 隊數到 4 隊以上時預設有季殿軍賽
+      if (n < 2) {
+        box.innerHTML = '<div class="img-note">請先在上方輸入至少 2 隊，系統會產生對戰表供你調整。</div>';
+        return;
+      }
+      if (!imgEd || imgEd.n !== n) imgEd = { n, rows: defaultImageRows(n) };
+      const bronze = bronzeEl.checked;
+      const finalId = bronze ? n : n - 1;
+      const regIds = imgEd.rows.filter(r => r.id !== 'F').map(r => r.id);
+      const opts = (cur, selfId) =>
+        teams.map((t, i) => `<option value="s${i + 1}"${cur === 's' + (i + 1) ? ' selected' : ''}>第${i + 1}籤 ${escapeHtml(t)}</option>`).join('') +
+        regIds.filter(m => m !== selfId).map(m => `<option value="m${m}"${cur === 'm' + m ? ' selected' : ''}>【${m}】勝者</option>`).join('');
+      box.innerHTML = '<table class="img-table"><thead><tr><th>場次</th><th>A 方</th><th>B 方</th><th>時間／場地</th></tr></thead><tbody>' +
+        imgEd.rows.map((r, idx) => `<tr>
+          <td class="img-id">${r.id === 'F' ? `【${finalId}】冠亞軍賽` : `【${r.id}】`}</td>
+          <td><select data-i="${idx}" data-k="a">${opts(r.a, r.id)}</select></td>
+          <td><select data-i="${idx}" data-k="b">${opts(r.b, r.id)}</select></td>
+          <td><input data-i="${idx}" data-k="meta" value="${escapeHtml(r.meta)}" placeholder="可空白"></td>
+        </tr>`).join('') +
+        (bronze ? `<tr><td class="img-id">【${n - 1}】季殿軍賽</td><td colspan="3" class="img-note">由冠亞軍賽兩方各自前一場的敗者出賽</td></tr>` : '') +
+        '</tbody></table>';
+      box.querySelectorAll('[data-i]').forEach(el => {
+        el.oninput = el.onchange = () => { imgEd.rows[el.dataset.i][el.dataset.k] = el.value; };
+      });
+    }
+
+    function buildImageLayout(teams, bronze) {
+      const n = teams.length;
+      const rows = imgEd.rows;
+      const finalId = bronze ? n : n - 1;
+      const count = {};
+      rows.forEach(r => {
+        if (r.a === r.b) throw new Error(`${r.id === 'F' ? '冠亞軍賽' : `【${r.id}】`}的 A、B 兩方不能相同。`);
+        [r.a, r.b].forEach(v => { count[v] = (count[v] || 0) + 1; });
+      });
+      for (let i = 1; i <= n; i++) {
+        const c = count['s' + i] || 0;
+        if (c !== 1) throw new Error(`第${i}籤（${teams[i - 1]}）${c ? `被安排了 ${c} 場` : '沒有安排比賽'}，每一籤只能出現一次。`);
+      }
+      rows.filter(r => r.id !== 'F').forEach(r => {
+        const c = count['m' + r.id] || 0;
+        if (c !== 1) throw new Error(`【${r.id}】的勝者${c ? `被安排了 ${c} 次` : '沒有晉級到任何一場'}。`);
+      });
+      // 每一場都要能一路晉級到冠亞軍賽，且不能有循環
+      const byId = {};
+      rows.forEach(r => { byId[r.id] = r; });
+      const seen = new Set();
+      const walk = (id, stack) => {
+        if (stack.has(id)) throw new Error('對戰順序有循環，請檢查各場勝者的去向。');
+        seen.add(id);
+        const next = new Set(stack).add(id);
+        [byId[id].a, byId[id].b].forEach(v => { if (v[0] === 'm') walk(Number(v.slice(1)), next); });
+      };
+      walk('F', new Set());
+      if (seen.size !== rows.length) throw new Error('有場次沒有連到冠亞軍賽，請檢查對戰表。');
+
+      const ref = v => v[0] === 's' ? { slot: Number(v.slice(1)) } : { match: Number(v.slice(1)) };
+      const fin = byId.F;
+      const out = rows.map(r => ({
+        id: r.id === 'F' ? finalId : r.id, a: ref(r.a), b: ref(r.b), time: (r.meta || '').trim(), court: '',
+        ...(r.id === 'F' ? { final: true } : {})
+      }));
+      if (bronze) {
+        if (fin.a[0] !== 'm' || fin.b[0] !== 'm') throw new Error('季殿軍賽需要冠亞軍賽兩方都來自前一場的勝者。');
+        out.push({ id: n - 1, a: { loser: Number(fin.a.slice(1)) }, b: { loser: Number(fin.b.slice(1)) }, time: '', court: '', bronze: true });
+      }
+      return { source: 'image', matches: out.sort((x, y) => x.id - y.id) };
+    }
+
+    // 開啟圖片編輯視窗；建立成功回傳 { key, label, teams }，取消回傳 null
+    function openImageScheduleEditor(file, failed) {
+      return new Promise(resolve => {
+        const modal = document.getElementById('img-modal');
+        const img = document.getElementById('img-preview');
+        const url = URL.createObjectURL(file);
+        img.src = url;
+        img.classList.remove('zoom');
+        document.getElementById('img-file-name').textContent = file.name;
+        document.getElementById('img-title').value = file.name.replace(/\.[^.]+$/, '');
+        document.getElementById('img-teams').value = '';
+        document.getElementById('img-bronze').checked = true;
+        document.getElementById('img-error').textContent = '';
+        imgEd = null;
+        renderImageRows();
+        modal.style.display = 'flex';
+
+        let timer = null;
+        document.getElementById('img-teams').oninput = () => { clearTimeout(timer); timer = setTimeout(renderImageRows, 300); };
+        document.getElementById('img-bronze').onchange = renderImageRows;
+
+        const finish = (res) => {
+          modal.style.display = 'none';
+          URL.revokeObjectURL(url);
+          img.removeAttribute('src');
+          document.getElementById('img-ok').onclick = null;
+          document.getElementById('img-cancel').onclick = null;
+          resolve(res);
+        };
+        document.getElementById('img-cancel').onclick = () => finish(null);
+        document.getElementById('img-ok').onclick = () => {
+          const err = document.getElementById('img-error');
+          try {
+            renderImageRows();
+            const title = document.getElementById('img-title').value.trim();
+            const teams = imgTeamList();
+            if (!title) throw new Error('請輸入賽程名稱。');
+            if (teams.length < 2) throw new Error('最少需要 2 隊。');
+            const dup = teams.find((t, i) => teams.indexOf(t) !== i);
+            if (dup) throw new Error(`隊名「${dup}」重複。`);
+            const layout = buildImageLayout(teams, document.getElementById('img-bronze').checked);
+            const label = title.replace(/(賽程表|賽程圖|樹狀圖)$/, '').slice(0, 16) || title;
+            const key = gradeKeyForTitle(title);
+            const fails = [];
+            if (!canReplaceGrade(key, label, fails, file.name)) {
+              if (fails.length) throw new Error(fails[0]);
+              return;
+            }
+            allGradesData[key] = { title, label, teams, results: {}, layout };
+            pendingGrades.add(key);
+            saveLocalBackup();
+            flushSync();
+            finish({ key, label, teams: teams.length });
+          } catch (e) {
+            err.textContent = '⚠️ ' + e.message;
+          }
+        };
+      });
     }
 
     // 刪除目前頁籤的賽程（「自訂賽事」除外）
@@ -2076,7 +2311,7 @@
         const tag = m.final ? '冠亞軍賽' : (m.bronze ? '季殿軍賽' : '');
         matches[m.id] = {
           id: m.id,
-          name: `【${m.id}】${tag}`,
+          name: `${m.label || `【${m.id}】`}${tag}`,
           meta: [m.time, m.court ? `${m.court} 場地` : ''].filter(Boolean).join('｜'),
           fromA: toNode(m.a),
           fromB: toNode(m.b),
