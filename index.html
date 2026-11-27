@@ -939,7 +939,7 @@
         <div class="pdf-import-title">📄 匯入 PDF 賽程表</div>
         <div class="pdf-import-hint">可一次選多個 PDF，每個檔案會新增一個頁籤。支援單淘汰樹狀賽程表（場次【1】、時間、場地、最下方隊伍與籤號），須為可選取文字的 PDF。</div>
       </div>
-      <button class="btn-primary" onclick="importPdfSchedules()">📄 選擇 PDF 檔案…</button>
+      <button class="btn-primary" onclick="importPdfSchedules()">📄 選擇賽程PDF檔案</button>
       <input type="file" id="pdf-file-input" accept=".pdf,application/pdf" multiple hidden onchange="handlePdfFiles(this)">
     </div>
     <div class="pdf-import-list" id="pdf-import-list"></div>
@@ -971,8 +971,8 @@
     <button class="btn-lock" id="btn-lock-grade" onclick="toggleGradeLock()">🏁 結束分組賽程</button>
     <button class="btn-danger" id="btn-delete-grade" onclick="deleteCurrentGrade()">🗑️ 刪除此賽程</button>
     <button class="btn-outline" onclick="window.print()">🖨️ 列印賽程表</button>
-    <button class="btn-outline" onclick="exportData()">💾 匯出資料</button>
-    <button class="btn-outline" onclick="importData()">📂 匯入資料</button>
+    <button class="btn-outline" onclick="exportBracketPdf()">💾 匯出賽程表 PDF</button>
+    <button class="btn-outline" onclick="importPdfSchedules()">📄 選擇賽程PDF檔案</button>
   </div>
 
   <!-- 分組賽程已結束提示 -->
@@ -1433,35 +1433,84 @@
       }
     }
 
-    // 匯出 / 匯入 JSON 備份
-    function exportData() {
-      const blob = new Blob([JSON.stringify(allGradesData, null, 2)], { type: 'application/json' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = 'tournament_data.json';
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    // ===== 匯出目前賽程表為 PDF（標題、榮譽榜、樹狀賽程圖） =====
+    const HTML2CANVAS_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+    const JSPDF_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+
+    async function ensurePdfLibs() {
+      if (!window.html2canvas) await loadScript(HTML2CANVAS_SRC);
+      if (!window.jspdf) await loadScript(JSPDF_SRC);
     }
 
-    function importData() {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = '.json,application/json';
-      input.onchange = () => {
-        const file = input.files[0];
-        if (!file) return;
-        file.text().then(txt => {
-          const data = JSON.parse(txt);
-          if (!confirm('確定以匯入的檔案覆蓋所有年級的賽程資料嗎？')) return;
-          allGradesData = normalizeAll(data);
-          saveLocalBackup();
-          Object.keys(allGradesData).forEach(g => pendingGrades.add(g));
-          flushSync();
-          renderCurrentGrade();
-          updateStatusContent('📂 已匯入賽程資料！');
-        }).catch(() => alert('檔案格式錯誤，無法匯入。'));
-      };
-      input.click();
+    function captureEl(el) {
+      return html2canvas(el, {
+        scale: 2,
+        backgroundColor: '#ffffff',
+        logging: false,
+        scrollX: 0,
+        scrollY: 0,
+        // 以寬版視窗排版，避免手機或小視窗把賽程圖裁掉
+        windowWidth: Math.max(document.documentElement.clientWidth, 1440),
+        onclone: (doc) => {
+          const st = doc.createElement('style');
+          st.textContent = '*, *::before, *::after { animation: none !important; transition: none !important; }' +
+            '.bracket-viewport { overflow: visible !important; max-width: none !important; }';
+          doc.head.appendChild(st);
+          // html2canvas 遇到 translateX(-50%) + overflow:hidden 會裁掉內容，改用等效的負邊界
+          doc.querySelectorAll('.match-box').forEach(b => {
+            if (doc.defaultView.getComputedStyle(b).transform === 'none') return;
+            b.style.transform = 'none';
+            b.style.marginLeft = `-${b.offsetWidth / 2}px`;
+          });
+        }
+      });
+    }
+
+    async function buildBracketPdf() {
+      await ensurePdfLibs();
+      drawLines();
+      const parts = [await captureEl(document.querySelector('header'))];
+      const podium = document.getElementById('podium-container');
+      if (podium.style.display !== 'none') parts.push(await captureEl(podium));
+      parts.push(await captureEl(document.getElementById('bracket-container')));
+
+      // 上下拼成一張圖
+      const gap = 24;
+      const W = Math.max(...parts.map(c => c.width));
+      const H = parts.reduce((s, c) => s + c.height, 0) + gap * (parts.length - 1);
+      const canvas = document.createElement('canvas');
+      canvas.width = W;
+      canvas.height = H;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, W, H);
+      let y = 0;
+      parts.forEach(c => { ctx.drawImage(c, Math.round((W - c.width) / 2), y); y += c.height + gap; });
+
+      // 依比例放進一頁 A4
+      const { jsPDF } = window.jspdf;
+      const pdf = new jsPDF({ orientation: W >= H ? 'landscape' : 'portrait', unit: 'mm', format: 'a4', compress: true });
+      const pw = pdf.internal.pageSize.getWidth(), ph = pdf.internal.pageSize.getHeight(), m = 8;
+      const s = Math.min((pw - 2 * m) / W, (ph - 2 * m) / H);
+      pdf.addImage(canvas.toDataURL('image/jpeg', 0.92), 'JPEG', (pw - W * s) / 2, m, W * s, H * s);
+      return pdf;
+    }
+
+    function bracketPdfName() {
+      const g = allGradesData[currentGrade];
+      return String(g.title || g.label || '賽程表').replace(/[\\/:*?"<>|]/g, '_') + '.pdf';
+    }
+
+    async function exportBracketPdf() {
+      updateStatusContent('💾 正在產生 PDF…');
+      try {
+        const pdf = await buildBracketPdf();
+        pdf.save(bracketPdfName());
+        updateStatusContent(`💾 已匯出 PDF：<strong>${escapeHtml(bracketPdfName())}</strong>`);
+      } catch (err) {
+        updateStatusContent('⚠️ 匯出 PDF 失敗');
+        alert('匯出 PDF 失敗：' + (err && err.message));
+      }
     }
 
     // 切換年級分頁
